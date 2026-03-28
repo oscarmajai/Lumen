@@ -1,0 +1,19 @@
+.idea
+.env
+node_modules
+
+# Build de producción (Vite)
+dist/
+dist-ssr/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Archivos del Sistema Operativo
+.DS_Store
+Thumbs.db
+
+# Ignorar archivos de docker locales
+docker-compose.override.yml
