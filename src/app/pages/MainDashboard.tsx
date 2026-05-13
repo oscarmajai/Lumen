@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router";
+import { useAuth } from "@/app/context/AuthContext";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -18,7 +19,7 @@ import {
   MessageSquare,
   User,
   Search,
-  Clock,
+  Trash2,
   Menu,
   Database,
   BarChart3,
@@ -30,6 +31,7 @@ import {
   CheckCircle,
   AlertCircle,
   X as XIcon,
+  LogOut,
 } from "lucide-react";
 import {
   ResizablePanelGroup,
@@ -54,7 +56,10 @@ import {
 } from "../components/ui/select";
 import { ScrollArea } from "../components/ui/scroll-area";
 import { toast } from "sonner";
-import { chat as chatApi, getDocuments, uploadFile, getIndexStatus } from "@/lib/api";
+import {
+  chat as chatApi, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
+  getChatSessions, getChatMessages, deleteChatSession, ChatSession,
+} from "@/lib/api";
 
 // Types for API integration
 interface Document {
@@ -88,19 +93,8 @@ interface KnowledgeGap {
   gaps: number;
 }
 
-interface ChatHistory {
-  id: string;
-  title: string;
-  lastMessage: string;
-  timestamp: Date;
-  messageCount: number;
-}
-
-interface FrequentTopic {
-  topic: string;
-  queries: number;
-  coverage: "high" | "medium" | "low";
-}
+// Re-use ChatSession from api — just alias it locally
+type ChatHistory = ChatSession;
 
 const KNOWLEDGE_AREAS = [
   "RRHH",
@@ -113,11 +107,30 @@ const KNOWLEDGE_AREAS = [
   "Comercial",
 ] as const;
 
+function relativeTime(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `hace ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `hace ${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `hace ${days}d`;
+  return new Date(dateStr).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' });
+}
+
 export default function MainDashboard() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [employeeAreas, setEmployeeAreas] = useState<Area[]>([]);
   const pollingRefs = useRef<Map<string, number>>(new Map());
   const isMountedRef = useRef<boolean>(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -218,16 +231,29 @@ export default function MainDashboard() {
     }
   }
 
+  const refreshSessions = async () => {
+    try {
+      const sessions = await getChatSessions();
+      setChatHistory(sessions);
+    } catch {
+      // silent — sidebar just stays empty
+    }
+  };
+
   useEffect(() => {
     isMountedRef.current = true;
-    refreshDocuments();
+    refreshSessions();
+    if (user?.role === 'EMPLOYEE') {
+      getAreas().then(setEmployeeAreas).catch(() => {});
+    } else {
+      refreshDocuments();
+    }
     return () => {
       isMountedRef.current = false;
-      // clear all polling intervals
       pollingRefs.current.forEach((id) => clearInterval(id));
       pollingRefs.current.clear();
     };
-  }, []);
+  }, [user?.role]);
 
   // Drag & Drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -343,7 +369,8 @@ export default function MainDashboard() {
     setIsLoading(true);
 
     try {
-      const res = await chatApi(text, 'lumen-user');
+      const isNewSession = !currentChatId;
+      const res = await chatApi(text, currentChatId ?? undefined);
       const assistantMessage: Message = {
         id: `${Date.now()}-assistant`,
         type: 'assistant',
@@ -351,7 +378,8 @@ export default function MainDashboard() {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
-      if (res.conversation_id) setCurrentChatId(res.conversation_id);
+      if (res.session_id) setCurrentChatId(res.session_id);
+      if (isNewSession) refreshSessions();
     } catch (err: any) {
       toast.error('Error enviando el mensaje', { description: err?.message });
     } finally {
@@ -372,35 +400,39 @@ export default function MainDashboard() {
   };
 
   const handleNewChat = () => {
-    if (messages.length > 0) {
-      // TODO: Save current chat to history before clearing
-      const chatTitle = messages[0]?.content.substring(0, 50) || "Nueva conversación";
-      
-      toast.success("Chat guardado en historial", {
-        description: chatTitle
-      });
-    }
-    
     setMessages([]);
     setCurrentChatId(null);
     setChatInput("");
   };
 
-  const loadChatHistory = (chatId: string) => {
-    // TODO: Load messages from API
-    setCurrentChatId(chatId);
-    toast.info("Cargando conversación...");
+  const loadChatHistory = async (chatId: string) => {
+    if (chatId === currentChatId) return;
+    try {
+      const msgs = await getChatMessages(chatId);
+      setMessages(msgs.map(m => ({
+        id: m.id,
+        type: m.role === 'user' ? 'user' as const : 'assistant' as const,
+        content: m.content,
+        timestamp: new Date(m.created_at),
+      })));
+      setCurrentChatId(chatId);
+    } catch (err: any) {
+      toast.error('No se pudo cargar la conversación', { description: err?.message });
+    }
   };
 
-  const deleteChatFromHistory = (chatId: string, e: React.MouseEvent) => {
+  const deleteChatFromHistory = async (chatId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    setChatHistory(prev => prev.filter(chat => chat.id !== chatId));
-    toast.success("Chat eliminado del historial");
-    
-    if (currentChatId === chatId) {
-      setMessages([]);
-      setCurrentChatId(null);
+    try {
+      await deleteChatSession(chatId);
+      setChatHistory(prev => prev.filter(c => c.id !== chatId));
+      if (currentChatId === chatId) {
+        setMessages([]);
+        setCurrentChatId(null);
+      }
+      toast.success('Conversación eliminada');
+    } catch (err: any) {
+      toast.error('Error al eliminar', { description: err?.message });
     }
   };
 
@@ -415,14 +447,9 @@ export default function MainDashboard() {
     doc.name.toLowerCase().includes(documentFilter.toLowerCase())
   );
 
-  const filteredChatHistory = chatHistory.filter((chat) => {
-    if (!chatHistorySearch.trim()) return true;
-    const searchLower = chatHistorySearch.toLowerCase();
-    return (
-      chat.title.toLowerCase().includes(searchLower) ||
-      chat.lastMessage.toLowerCase().includes(searchLower)
-    );
-  });
+  const filteredChatHistory = chatHistory.filter((chat) =>
+    !chatHistorySearch.trim() || chat.title.toLowerCase().includes(chatHistorySearch.toLowerCase())
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
@@ -460,23 +487,33 @@ export default function MainDashboard() {
                 <p className="text-xs text-gray-400 mt-1">Inicia un chat nuevo</p>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-1">
                 {filteredChatHistory.map((chat) => (
-                  <button
+                  <div
                     key={chat.id}
+                    className={`group relative flex items-start gap-2 p-3 rounded-lg cursor-pointer transition-colors ${
+                      chat.id === currentChatId
+                        ? 'bg-blue-50 border border-blue-200'
+                        : 'hover:bg-gray-50 border border-transparent'
+                    }`}
                     onClick={() => loadChatHistory(chat.id)}
-                    className="w-full text-left p-3 rounded-lg hover:bg-gray-50 transition-colors"
                   >
-                    <div className="flex items-start justify-between gap-2 mb-1">
-                      <p className="text-sm font-semibold text-gray-900 truncate flex-1">
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm font-semibold truncate ${chat.id === currentChatId ? 'text-blue-900' : 'text-gray-900'}`}>
                         {chat.title}
                       </p>
-                      <Clock className="w-3 h-3 text-gray-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {relativeTime(chat.updated_at)}
+                      </p>
                     </div>
-                    <p className="text-xs text-gray-500 truncate mb-1">
-                      {chat.lastMessage}
-                    </p>
-                  </button>
+                    <button
+                      onClick={(e) => deleteChatFromHistory(chat.id, e)}
+                      className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1 rounded hover:bg-red-50 hover:text-red-500 text-gray-400 transition-all mt-0.5"
+                      title="Eliminar conversación"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -533,6 +570,11 @@ export default function MainDashboard() {
                 </nav>
 
                 <div className="flex items-center gap-2">
+                  {user && (
+                    <span className="hidden md:block text-sm text-gray-600 font-medium">
+                      {user.name}
+                    </span>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -540,6 +582,15 @@ export default function MainDashboard() {
                     onClick={() => navigate("/settings")}
                   >
                     <Settings className="w-5 h-5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-gray-600 hover:text-red-600 hover:bg-red-50"
+                    onClick={handleLogout}
+                    title="Cerrar sesión"
+                  >
+                    <LogOut className="w-5 h-5" />
                   </Button>
                 </div>
               </div>
@@ -558,62 +609,83 @@ export default function MainDashboard() {
               {mobileActiveTab === "fuentes" && (
                 <>
                   <div className="border-b border-gray-200 px-4 py-3 flex-shrink-0">
-                    <h2 className="text-lg font-bold text-gray-900">Fuentes de Conocimiento</h2>
-                    <p className="text-xs text-gray-500">Gestiona tus documentos corporativos</p>
+                    <h2 className="text-lg font-bold text-gray-900">
+                      {user?.role === 'EMPLOYEE' ? 'Mis Áreas' : 'Fuentes de Conocimiento'}
+                    </h2>
+                    <p className="text-xs text-gray-500">
+                      {user?.role === 'EMPLOYEE' ? 'Áreas de conocimiento asignadas' : 'Gestiona tus documentos corporativos'}
+                    </p>
                   </div>
 
                   <ScrollArea className="flex-1 p-4">
-                    <div className="space-y-4">
-                      {/* Upload Section */}
-                      <label htmlFor="file-upload-mobile-tab" className="cursor-pointer block">
-                        <div className="border-2 border-dashed rounded-lg p-6 text-center transition-all border-gray-300 active:border-cyan-400 active:bg-cyan-50/30">
-                          <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                          <p className="text-sm font-semibold text-gray-700">
-                            Cargar Archivos
-                          </p>
-                          <p className="text-xs text-gray-500">PDF, DOCX, XLSX</p>
-                        </div>
-                        <input
-                          id="file-upload-mobile-tab"
-                          type="file"
-                          multiple
-                          accept=".pdf,.docx,.xlsx,.doc,.xls"
-                          className="hidden"
-                          onChange={(e) => handleFileSelect(e.target.files)}
-                        />
-                      </label>
-
-                      {/* Documents List */}
-                      <div>
-                        <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">
-                          Archivos ({documents.length})
-                        </h3>
-                        {filteredDocuments.length === 0 ? (
+                    {user?.role === 'EMPLOYEE' ? (
+                      <div className="space-y-3">
+                        {employeeAreas.length === 0 ? (
                           <div className="text-center py-8">
-                            <FileText className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                            <p className="text-sm text-gray-500">Sin documentos</p>
-                            <p className="text-xs text-gray-400 mt-1">Carga documentos para comenzar</p>
+                            <Database className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                            <p className="text-sm text-gray-500">Sin áreas asignadas</p>
+                            <p className="text-xs text-gray-400 mt-1">Contacta a tu administrador</p>
                           </div>
                         ) : (
-                          <div className="space-y-2">
-                            {filteredDocuments.map((doc) => (
-                              <div
-                                key={doc.id}
-                                className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border border-gray-200"
-                              >
-                                <FileText className="w-5 h-5 text-gray-500 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium text-gray-900 truncate">
-                                    {doc.name}
-                                  </p>
-                                  <p className="text-xs text-gray-500">{doc.area}</p>
+                          employeeAreas.map((area) => (
+                            <div key={area.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
+                              <div className="flex items-center gap-2 mb-1">
+                                <div className="p-1.5 bg-cyan-50 rounded-lg">
+                                  <Database size={14} className="text-cyan-600" />
                                 </div>
+                                <span className="text-sm font-bold text-gray-800 truncate flex-1">{area.name}</span>
                               </div>
-                            ))}
-                          </div>
+                              {area.description && (
+                                <p className="text-xs text-gray-500 line-clamp-2 pl-1">{area.description}</p>
+                              )}
+                            </div>
+                          ))
                         )}
                       </div>
-                    </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <label htmlFor="file-upload-mobile-tab" className="cursor-pointer block">
+                          <div className="border-2 border-dashed rounded-lg p-6 text-center transition-all border-gray-300 active:border-cyan-400 active:bg-cyan-50/30">
+                            <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                            <p className="text-sm font-semibold text-gray-700">Cargar Archivos</p>
+                            <p className="text-xs text-gray-500">PDF, DOCX, XLSX</p>
+                          </div>
+                          <input
+                            id="file-upload-mobile-tab"
+                            type="file"
+                            multiple
+                            accept=".pdf,.docx,.xlsx,.doc,.xls"
+                            className="hidden"
+                            onChange={(e) => handleFileSelect(e.target.files)}
+                          />
+                        </label>
+
+                        <div>
+                          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">
+                            Archivos ({documents.length})
+                          </h3>
+                          {filteredDocuments.length === 0 ? (
+                            <div className="text-center py-8">
+                              <FileText className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                              <p className="text-sm text-gray-500">Sin documentos</p>
+                              <p className="text-xs text-gray-400 mt-1">Carga documentos para comenzar</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {filteredDocuments.map((doc) => (
+                                <div key={doc.id} className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border border-gray-200">
+                                  <FileText className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium text-gray-900 truncate">{doc.name}</p>
+                                    <p className="text-xs text-gray-500">{doc.area}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </ScrollArea>
                 </>
               )}
@@ -808,7 +880,9 @@ export default function MainDashboard() {
                 <div className="h-full flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm">
                   <div className="p-4 border-b border-gray-200">
                     <div className="flex items-center justify-between">
-                      <h2 className="font-bold text-gray-900">Fuentes</h2>
+                      <h2 className="font-bold text-gray-900">
+                        {user?.role === 'EMPLOYEE' ? 'Mis Áreas' : 'Fuentes'}
+                      </h2>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -823,100 +897,129 @@ export default function MainDashboard() {
                     </div>
                   </div>
 
-                  <ScrollArea className="flex-1 p-4">
-                    <div className="space-y-4">
-                      <label htmlFor="file-upload" className="cursor-pointer block group">
-                        <div
-                          onDragOver={handleDragOver}
-                          onDragLeave={handleDragLeave}
-                          onDrop={handleDrop}
-                          className={`border-2 border-dashed rounded-xl p-4 text-center transition-all duration-200 ${
-                            isDragging
-                              ? "border-blue-500 bg-blue-50"
-                              : "border-gray-200 group-hover:border-blue-400 group-hover:bg-blue-50/30"
-                          }`}
-                        >
-                          <div className="bg-blue-50 w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-2 group-hover:scale-110 transition-transform">
-                            <Upload className="w-5 h-5 text-blue-600" />
-                          </div>
-                          <p className="text-xs font-bold text-gray-700">
-                            {isDragging ? "Suelta aquí" : "Cargar Archivos"}
-                          </p>
-                          <p className="text-[10px] text-gray-400 mt-1">PDF, DOCX, XLSX</p>
-                        </div>
-                        <input
-                          id="file-upload"
-                          type="file"
-                          multiple
-                          accept=".pdf,.docx,.xlsx,.doc,.xls"
-                          className="hidden"
-                          onChange={(e) => handleFileSelect(e.target.files)}
-                        />
-                      </label>
-
-                      {/* Documents List */}
-                      <div>
-                        <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">
-                          Archivos ({documents.length})
-                        </h3>
-                        {filteredDocuments.length === 0 ? (
-                          <div className="text-center py-6">
-                            <FileText className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                            <p className="text-xs text-gray-500">Sin documentos</p>
+                  {user?.role === 'EMPLOYEE' ? (
+                    /* Employee: show assigned areas */
+                    <ScrollArea className="flex-1 p-4">
+                      <div className="space-y-3">
+                        {employeeAreas.length === 0 ? (
+                          <div className="text-center py-10">
+                            <Database className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                            <p className="text-xs text-gray-500">Sin áreas asignadas</p>
+                            <p className="text-[10px] text-gray-400 mt-1">Contacta a tu administrador</p>
                           </div>
                         ) : (
-                          <div className="space-y-2">
-                            {filteredDocuments.slice(0, 10).map((doc) => {
-                              const mapStatus = () => {
-                                switch (doc.technicalStatus) {
-                                  case 'uploading':
-                                    return { Icon: Loader2, label: 'Subiendo...', colorClass: 'text-blue-600', barColor: 'bg-gray-200', spin: true };
-                                  case 'queued':
-                                    return { Icon: Clock3, label: 'En cola', colorClass: 'text-gray-500', barColor: 'bg-gray-200', spin: false };
-                                  case 'indexing':
-                                    return { Icon: Loader2, label: 'Indexando...', colorClass: 'text-amber-600', barColor: 'bg-amber-500', spin: true };
-                                  case 'completed':
-                                    return { Icon: CheckCircle, label: 'Indexado', colorClass: 'text-emerald-600', barColor: '', spin: false };
-                                  case 'error':
-                                    return { Icon: AlertCircle, label: 'Error', colorClass: 'text-red-600', barColor: '', spin: false };
-                                  case 'paused':
-                                    return { Icon: XIcon, label: 'Pausado', colorClass: 'text-orange-700', barColor: '', spin: false };
-                                  default:
-                                    return { Icon: Loader2, label: 'Procesando...', colorClass: 'text-amber-600', barColor: 'bg-amber-500', spin: true };
-                                }
-                              };
-                              const { Icon, label, colorClass, barColor, spin } = mapStatus();
-                              const showBar = doc.technicalStatus === 'queued' || doc.technicalStatus === 'indexing';
-                              const percent = Math.max(0, Math.min(100, Math.round(doc.progress || 0)));
-                              const barPercent = doc.technicalStatus === 'queued' ? 5 : percent;
-                              return (
-                                <div key={doc.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors group">
-                                  <div className="flex items-center gap-2 mb-1.5">
-                                    <div className="p-1.5 bg-indigo-50 rounded-lg group-hover:bg-indigo-100 transition-colors">
-                                      <FileText size={14} className="text-indigo-500" />
-                                    </div>
-                                    <span className="text-xs font-bold text-gray-700 truncate flex-1">{doc.name}</span>
-                                  </div>
-                                  <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
-                                    <div className={`flex items-center gap-1 ${colorClass}`}>
-                                      <Icon size={12} className={spin ? 'animate-spin' : ''} />
-                                      <span>{label}</span>
-                                    </div>
-                                    {doc.technicalStatus === 'indexing' && <span className="text-gray-400">{percent}%</span>}
-                                  </div>
-                                  {showBar && (
-                                    <div className="w-full h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden">
-                                      <div className={`h-1.5 rounded-full ${barColor || 'bg-gray-300'}`} style={{ width: `${barPercent}%` }} />
-                                    </div>
-                                  )}
+                          employeeAreas.map((area) => (
+                            <div key={area.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm hover:border-cyan-200 transition-colors">
+                              <div className="flex items-center gap-2 mb-1">
+                                <div className="p-1.5 bg-cyan-50 rounded-lg">
+                                  <Database size={14} className="text-cyan-600" />
                                 </div>
-                              );
-                            })}
-                          </div>
+                                <span className="text-xs font-bold text-gray-800 truncate flex-1">{area.name}</span>
+                              </div>
+                              {area.description && (
+                                <p className="text-[10px] text-gray-500 line-clamp-2 pl-1">{area.description}</p>
+                              )}
+                            </div>
+                          ))
                         )}
                       </div>
-                    </div>
-                  </ScrollArea>
+                    </ScrollArea>
+                  ) : (
+                    /* Owner/Admin: upload + documents */
+                    <ScrollArea className="flex-1 p-4">
+                      <div className="space-y-4">
+                        <label htmlFor="file-upload" className="cursor-pointer block group">
+                          <div
+                            onDragOver={handleDragOver}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                            className={`border-2 border-dashed rounded-xl p-4 text-center transition-all duration-200 ${
+                              isDragging
+                                ? "border-blue-500 bg-blue-50"
+                                : "border-gray-200 group-hover:border-blue-400 group-hover:bg-blue-50/30"
+                            }`}
+                          >
+                            <div className="bg-blue-50 w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-2 group-hover:scale-110 transition-transform">
+                              <Upload className="w-5 h-5 text-blue-600" />
+                            </div>
+                            <p className="text-xs font-bold text-gray-700">
+                              {isDragging ? "Suelta aquí" : "Cargar Archivos"}
+                            </p>
+                            <p className="text-[10px] text-gray-400 mt-1">PDF, DOCX, XLSX</p>
+                          </div>
+                          <input
+                            id="file-upload"
+                            type="file"
+                            multiple
+                            accept=".pdf,.docx,.xlsx,.doc,.xls"
+                            className="hidden"
+                            onChange={(e) => handleFileSelect(e.target.files)}
+                          />
+                        </label>
+
+                        <div>
+                          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">
+                            Archivos ({documents.length})
+                          </h3>
+                          {filteredDocuments.length === 0 ? (
+                            <div className="text-center py-6">
+                              <FileText className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                              <p className="text-xs text-gray-500">Sin documentos</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {filteredDocuments.slice(0, 10).map((doc) => {
+                                const mapStatus = () => {
+                                  switch (doc.technicalStatus) {
+                                    case 'uploading':
+                                      return { Icon: Loader2, label: 'Subiendo...', colorClass: 'text-blue-600', barColor: 'bg-gray-200', spin: true };
+                                    case 'queued':
+                                      return { Icon: Clock3, label: 'En cola', colorClass: 'text-gray-500', barColor: 'bg-gray-200', spin: false };
+                                    case 'indexing':
+                                      return { Icon: Loader2, label: 'Indexando...', colorClass: 'text-amber-600', barColor: 'bg-amber-500', spin: true };
+                                    case 'completed':
+                                      return { Icon: CheckCircle, label: 'Indexado', colorClass: 'text-emerald-600', barColor: '', spin: false };
+                                    case 'error':
+                                      return { Icon: AlertCircle, label: 'Error', colorClass: 'text-red-600', barColor: '', spin: false };
+                                    case 'paused':
+                                      return { Icon: XIcon, label: 'Pausado', colorClass: 'text-orange-700', barColor: '', spin: false };
+                                    default:
+                                      return { Icon: Loader2, label: 'Procesando...', colorClass: 'text-amber-600', barColor: 'bg-amber-500', spin: true };
+                                  }
+                                };
+                                const { Icon, label, colorClass, barColor, spin } = mapStatus();
+                                const showBar = doc.technicalStatus === 'queued' || doc.technicalStatus === 'indexing';
+                                const percent = Math.max(0, Math.min(100, Math.round(doc.progress || 0)));
+                                const barPercent = doc.technicalStatus === 'queued' ? 5 : percent;
+                                return (
+                                  <div key={doc.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm hover:border-blue-200 transition-colors group">
+                                    <div className="flex items-center gap-2 mb-1.5">
+                                      <div className="p-1.5 bg-indigo-50 rounded-lg group-hover:bg-indigo-100 transition-colors">
+                                        <FileText size={14} className="text-indigo-500" />
+                                      </div>
+                                      <span className="text-xs font-bold text-gray-700 truncate flex-1">{doc.name}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
+                                      <div className={`flex items-center gap-1 ${colorClass}`}>
+                                        <Icon size={12} className={spin ? 'animate-spin' : ''} />
+                                        <span>{label}</span>
+                                      </div>
+                                      {doc.technicalStatus === 'indexing' && <span className="text-gray-400">{percent}%</span>}
+                                    </div>
+                                    {showBar && (
+                                      <div className="w-full h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden">
+                                        <div className={`h-1.5 rounded-full ${barColor || 'bg-gray-300'}`} style={{ width: `${barPercent}%` }} />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </ScrollArea>
+                  )}
                 </div>
               ) : (
                 <div className="h-full bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col items-center py-6 gap-6">

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import ChatMessage from "../components/ChatMessage";
 import WelcomeScreen from "../components/WelcomeScreen";
+import { useAuth } from "@/app/context/AuthContext";
 
 // Mock data para documentos y respuestas
 const mockResponses = [
@@ -62,6 +63,7 @@ const mockResponses = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<
     Array<{
@@ -108,7 +110,8 @@ export default function Dashboard() {
   };
 
   const handleLogout = () => {
-    navigate("/");
+    logout();
+    navigate('/login');
   };
 
   const handleExampleQuery = (exampleQuery: string) => {
@@ -133,7 +136,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg border border-gray-200">
               <User className="w-4 h-4 text-gray-600" />
-              <span className="text-sm text-gray-700 font-medium">Usuario</span>
+              <span className="text-sm text-gray-700 font-medium">{user?.name ?? 'Usuario'}</span>
             </div>
             <Button
               variant="ghost"
