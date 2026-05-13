@@ -264,9 +264,18 @@ export interface ChatMessage {
   created_at: string;
 }
 
+export interface Citation {
+  document_name: string;
+  file_type: string;
+  content: string;
+  score: number | null;
+  dataset_name: string | null;
+}
+
 export interface ChatResponse {
   answer: string;
   session_id?: string;
+  citations?: Citation[];
 }
 
 export async function chat(message: string, sessionId?: string): Promise<ChatResponse> {
