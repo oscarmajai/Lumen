@@ -13,7 +13,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { chat as chatApi } from "@/lib/api";
+import { chat as chatApi, Citation } from "@/lib/api";
 import { toast } from "sonner";
 
 // Extend Window interface for Web Speech API
@@ -30,6 +30,7 @@ interface Message {
   content: string;
   timestamp: Date;
   isAudio?: boolean;
+  citations?: Citation[];
 }
 
 export default function LumenStation() {
@@ -273,6 +274,7 @@ export default function LumenStation() {
         content: response.answer,
         timestamp: new Date(),
         isAudio: true,
+        citations: response.citations ?? [],
       };
       
       setMessages(prev => [...prev, assistantMessage]);
