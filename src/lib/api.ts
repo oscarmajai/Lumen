@@ -270,6 +270,7 @@ export interface Citation {
   content: string;
   score: number | null;
   dataset_name: string | null;
+  document_id?: string | null;
 }
 
 export interface ChatResponse {
@@ -303,6 +304,82 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessage[]>
   if (!res.ok) throw new Error(`Error ${res.status}`);
   const data = await res.json();
   return data.messages;
+}
+
+export async function chatStream(
+  message: string,
+  sessionId: string | undefined,
+  onToken: (token: string, taskId: string | null) => void,
+  onDone: (citations: Citation[], sessionId: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await authFetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id: sessionId }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Chat error ${res.status}: ${text || res.statusText}`);
+  }
+
+  const newSessionId = res.headers.get('x-session-id') ?? sessionId ?? '';
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let taskId: string | null = null;
+  let citations: Citation[] = [];
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+        try {
+          const event = JSON.parse(jsonStr);
+          if (event.task_id && !taskId) taskId = event.task_id;
+          if (event.event === 'message' || event.event === 'agent_message') {
+            onToken(event.answer || '', taskId);
+          }
+          if (event.event === 'message_end') {
+            citations = (event.metadata?.retriever_resources ?? []).map((r: any) => ({
+              document_name: r.document_name,
+              file_type:     r.document_name?.split('.').pop()?.toLowerCase() ?? 'file',
+              content:       r.content,
+              score:         r.score ?? null,
+              dataset_name:  r.dataset_name ?? null,
+            }));
+          }
+        } catch {}
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  onDone(citations, newSessionId);
+}
+
+export async function stopGenerate(taskId: string): Promise<void> {
+  await authFetch(`/api/chat/messages/${encodeURIComponent(taskId)}/stop`, { method: 'POST' });
+}
+
+export async function getFilePreview(fileId: string): Promise<string> {
+  const res = await authFetch(`/api/chat/files/${encodeURIComponent(fileId)}/preview`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Preview error ${res.status}: ${text || res.statusText}`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {

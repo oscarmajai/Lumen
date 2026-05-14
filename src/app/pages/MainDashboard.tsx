@@ -52,6 +52,7 @@ import { toast } from "sonner";
 import {
   chat as chatApi, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
   getChatSessions, getChatMessages, deleteChatSession, ChatSession,
+  Citation as ApiCitation, getFilePreview,
 } from "@/lib/api";
 
 // Types for API integration
@@ -65,25 +66,12 @@ interface Document {
   size: string;
 }
 
-interface Citation {
-  title: string;
-  subtitle: string;
-  documentId?: string;
-  pageNumber?: number;
-}
-
 interface Message {
   id: string;
   type: "user" | "assistant";
   content: string;
   timestamp: Date;
-  citation?: Citation;
-}
-
-interface KnowledgeGap {
-  coverage: number;
-  indexed: number;
-  gaps: number;
+  citations?: ApiCitation[];
 }
 
 // Re-use ChatSession from api — just alias it locally
@@ -127,6 +115,7 @@ export default function MainDashboard() {
   const pollingRefs = useRef<Map<string, number>>(new Map());
   const isMountedRef = useRef<boolean>(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
 
   // Chat history features
   const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
@@ -369,6 +358,7 @@ export default function MainDashboard() {
         type: 'assistant',
         content: res.answer || '',
         timestamp: new Date(),
+        citations: res.citations ?? [],
       };
       setMessages((prev) => [...prev, assistantMessage]);
       if (res.session_id) setCurrentChatId(res.session_id);
@@ -396,6 +386,20 @@ export default function MainDashboard() {
     setMessages([]);
     setCurrentChatId(null);
     setChatInput("");
+  };
+
+  const handlePreview = async (fileId: string) => {
+    if (previewLoading) return;
+    setPreviewLoading(fileId);
+    try {
+      const url = await getFilePreview(fileId);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err: any) {
+      toast.error('No se pudo cargar la vista previa', { description: err?.message });
+    } finally {
+      setPreviewLoading(null);
+    }
   };
 
   const loadChatHistory = async (chatId: string) => {
@@ -810,19 +814,30 @@ export default function MainDashboard() {
                                   {message.content}
                                 </p>
                               </div>
-                              {message.citation && (
-                                <button className="flex items-center gap-2 p-2.5 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 mt-2 text-left w-full">
-                                  <FileText className="w-4 h-4 text-blue-600" />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-semibold text-gray-900 truncate">
-                                      {message.citation.title}
-                                    </p>
-                                    <p className="text-xs text-gray-600 truncate">
-                                      {message.citation.subtitle}
-                                    </p>
-                                  </div>
-                                  <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
-                                </button>
+                              {message.citations && message.citations.length > 0 && (
+                                <div className="mt-2 space-y-1.5">
+                                  {message.citations.map((cit, i) => (
+                                    <div key={i} className="flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
+                                      <FileText className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-semibold text-gray-800 truncate">{cit.document_name}</p>
+                                        {cit.content && <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{cit.content}</p>}
+                                      </div>
+                                      {cit.document_id && (
+                                        <button
+                                          onClick={() => handlePreview(cit.document_id!)}
+                                          disabled={previewLoading === cit.document_id}
+                                          className="flex-shrink-0 p-1 rounded hover:bg-blue-100 disabled:opacity-50"
+                                          title="Ver fuente"
+                                        >
+                                          {previewLoading === cit.document_id
+                                            ? <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
+                                            : <ExternalLink className="w-3.5 h-3.5 text-blue-500" />}
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
                               )}
                             </div>
                           </div>
@@ -1176,19 +1191,31 @@ export default function MainDashboard() {
                                     {message.content}
                                   </p>
                                 </div>
-                                {message.citation && (
-                                  <button className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 mt-2 text-left w-full">
-                                    <FileText className="w-4 h-4 text-blue-600" />
-                                    <div className="flex-1">
-                                      <p className="text-xs font-semibold text-gray-900">
-                                        {message.citation.title}
-                                      </p>
-                                      <p className="text-xs text-gray-600">
-                                        {message.citation.subtitle}
-                                      </p>
-                                    </div>
-                                    <ExternalLink className="w-4 h-4 text-blue-600" />
-                                  </button>
+                                {message.citations && message.citations.length > 0 && (
+                                  <div className="mt-2 space-y-1.5">
+                                    {message.citations.map((cit, i) => (
+                                      <div key={i} className="flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
+                                        <FileText className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-xs font-semibold text-gray-800 truncate">{cit.document_name}</p>
+                                          {cit.content && <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{cit.content}</p>}
+                                          {cit.dataset_name && <p className="text-[10px] text-blue-400 mt-0.5">{cit.dataset_name}</p>}
+                                        </div>
+                                        {cit.document_id && (
+                                          <button
+                                            onClick={() => handlePreview(cit.document_id!)}
+                                            disabled={previewLoading === cit.document_id}
+                                            className="flex-shrink-0 p-1 rounded hover:bg-blue-100 disabled:opacity-50"
+                                            title="Ver fuente"
+                                          >
+                                            {previewLoading === cit.document_id
+                                              ? <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
+                                              : <ExternalLink className="w-3.5 h-3.5 text-blue-500" />}
+                                          </button>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                             </div>

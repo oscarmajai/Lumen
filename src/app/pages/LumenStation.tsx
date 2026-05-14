@@ -13,7 +13,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { chat as chatApi, Citation } from "@/lib/api";
+import { chatStream, stopGenerate, Citation } from "@/lib/api";
 import { toast } from "sonner";
 
 // Extend Window interface for Web Speech API
@@ -43,8 +43,11 @@ export default function LumenStation() {
   const [currentResponse, setCurrentResponse] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [accumulatedTranscript, setAccumulatedTranscript] = useState("");
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const skipTypewriterRef = useRef(false);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -145,10 +148,14 @@ export default function LumenStation() {
     }
   }, []);
 
-  // Typewriter effect for the latest assistant message
+  // Typewriter effect for the latest assistant message (skipped after streaming)
   useEffect(() => {
     const lastMessage = messages.filter(m => m.type === 'assistant').pop();
     if (lastMessage && !isProcessing) {
+      if (skipTypewriterRef.current) {
+        skipTypewriterRef.current = false;
+        return;
+      }
       let i = 0;
       setCurrentResponse("");
       const interval = setInterval(() => {
@@ -262,28 +269,73 @@ export default function LumenStation() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const handleStopGenerate = async () => {
+    if (currentTaskId) {
+      try { await stopGenerate(currentTaskId); } catch {}
+    }
+    abortControllerRef.current?.abort();
+    setIsProcessing(false);
+    setCurrentTaskId(null);
+  };
+
   const processVoice = async (transcript: string) => {
     setIsProcessing(true);
-    
+    setCurrentTaskId(null);
+    setCurrentResponse("");
+
+    const abortCtrl = new AbortController();
+    abortControllerRef.current = abortCtrl;
+
+    let streamedAnswer = "";
+    let taskIdSet = false;
+
     try {
-      const response = await chatApi(transcript);
-      
-      const assistantMessage: Message = {
-        id: Date.now().toString(),
-        type: "assistant",
-        content: response.answer,
-        timestamp: new Date(),
-        isAudio: true,
-        citations: response.citations ?? [],
-      };
-      
-      setMessages(prev => [...prev, assistantMessage]);
-      speak(response.answer);
-    } catch (error) {
-      console.error("Error processing voice chat:", error);
-      toast.error("Hubo un error al procesar tu solicitud.");
+      await chatStream(
+        transcript,
+        undefined,
+        (token, taskId) => {
+          streamedAnswer += token;
+          setCurrentResponse(streamedAnswer);
+          if (taskId && !taskIdSet) {
+            taskIdSet = true;
+            setCurrentTaskId(taskId);
+          }
+        },
+        (finalCitations) => {
+          if (streamedAnswer) {
+            skipTypewriterRef.current = true;
+            setMessages(prev => [...prev, {
+              id: Date.now().toString(),
+              type: "assistant",
+              content: streamedAnswer,
+              timestamp: new Date(),
+              isAudio: true,
+              citations: finalCitations,
+            }]);
+            speak(streamedAnswer);
+          }
+        },
+        abortCtrl.signal,
+      );
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        if (streamedAnswer) {
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: "assistant",
+            content: streamedAnswer,
+            timestamp: new Date(),
+            isAudio: false,
+            citations: [],
+          }]);
+        }
+      } else {
+        console.error("Error processing voice chat:", error);
+        toast.error("Hubo un error al procesar tu solicitud.");
+      }
     } finally {
       setIsProcessing(false);
+      setCurrentTaskId(null);
     }
   };
 
@@ -336,12 +388,12 @@ export default function LumenStation() {
                         {!accumulatedTranscript && !interimTranscript && "Escuchando..."}
                     </p>
                 </div>
-            ) : isProcessing ? (
+            ) : isProcessing && !currentResponse ? (
                 <div className="flex flex-col items-center justify-center h-[50vh] gap-4">
                     <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
                     <p className="text-xl text-gray-500 font-medium animate-pulse">Procesando...</p>
                 </div>
-            ) : messages.length > 0 ? (
+            ) : currentResponse || messages.length > 0 ? (
                 <div className="text-center px-4 w-full flex items-center justify-center h-[50vh] overflow-hidden relative flex-col">
                     <p className="text-2xl md:text-4xl font-bold leading-tight text-slate-800 transition-all duration-500">
                         {assistantResponseText}
@@ -389,13 +441,24 @@ export default function LumenStation() {
                 </Button>
             )}
 
+            {isProcessing && currentTaskId && (
+                <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={handleStopGenerate}
+                    className="w-20 h-20 rounded-full border-red-200 bg-white hover:bg-red-50 text-red-500 shadow-lg"
+                >
+                    <Square className="w-8 h-8 fill-current" />
+                </Button>
+            )}
+
             <Button
                 size="lg"
                 onClick={toggleRecording}
                 disabled={isProcessing}
                 className={`h-20 w-20 rounded-full shadow-2xl transition-all duration-300 ${
-                    isRecording 
-                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    isRecording
+                    ? 'bg-red-500 hover:bg-red-600 text-white'
                     : 'bg-blue-600 hover:bg-blue-700 text-white'
                 } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
