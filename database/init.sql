@@ -8,7 +8,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- -------------------------------------------------------
 -- FASE 1: Tenants
 -- -------------------------------------------------------
-CREATE TABLE companies (
+CREATE TABLE IF NOT EXISTS companies (
     id         CHAR(36)     NOT NULL DEFAULT (UUID()),
     name       VARCHAR(255) NOT NULL,
     slug       VARCHAR(100) NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE companies (
 -- -------------------------------------------------------
 -- FASE 1 & 4: Usuarios
 -- -------------------------------------------------------
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id                   CHAR(36)     NOT NULL DEFAULT (UUID()),
     company_id           CHAR(36)     NOT NULL,
     name                 VARCHAR(255) NOT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE users (
 -- -------------------------------------------------------
 -- FASE 3: Áreas/Departamentos
 -- -------------------------------------------------------
-CREATE TABLE areas (
+CREATE TABLE IF NOT EXISTS areas (
     id          CHAR(36)     NOT NULL DEFAULT (UUID()),
     company_id  CHAR(36)     NOT NULL,
     name        VARCHAR(255) NOT NULL,
@@ -66,7 +66,7 @@ CREATE TABLE areas (
 -- -------------------------------------------------------
 -- FASE 3: Mapeo Área <-> Dataset de Dify
 -- -------------------------------------------------------
-CREATE TABLE knowledge_bases (
+CREATE TABLE IF NOT EXISTS knowledge_bases (
     id              CHAR(36)     NOT NULL DEFAULT (UUID()),
     company_id      CHAR(36)     NOT NULL,
     area_id         CHAR(36)     NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE knowledge_bases (
 -- -------------------------------------------------------
 -- FASE 4: Relación N:M Usuario <-> Área
 -- -------------------------------------------------------
-CREATE TABLE user_areas (
+CREATE TABLE IF NOT EXISTS user_areas (
     user_id     CHAR(36)  NOT NULL,
     area_id     CHAR(36)  NOT NULL,
     assigned_by CHAR(36)  NULL,
@@ -109,7 +109,7 @@ CREATE TABLE user_areas (
 -- -------------------------------------------------------
 -- FASE 6: Sesiones de Chat
 -- -------------------------------------------------------
-CREATE TABLE chat_sessions (
+CREATE TABLE IF NOT EXISTS chat_sessions (
     id                   CHAR(36)     NOT NULL DEFAULT (UUID()),
     company_id           CHAR(36)     NOT NULL,
     user_id              CHAR(36)     NOT NULL,
@@ -130,7 +130,7 @@ CREATE TABLE chat_sessions (
 -- -------------------------------------------------------
 -- FASE 6: Mensajes de Chat
 -- -------------------------------------------------------
-CREATE TABLE chat_messages (
+CREATE TABLE IF NOT EXISTS chat_messages (
     id         CHAR(36)                 NOT NULL DEFAULT (UUID()),
     session_id CHAR(36)                 NOT NULL,
     role       ENUM('user','assistant') NOT NULL,

@@ -19,4 +19,17 @@ export async function chatRoutes(fastify) {
   fastify.delete('/sessions/:sessionId', {
     preHandler: [authenticate],
   }, chatController.deleteSession);
+
+  fastify.post('/stream', {
+    preHandler: [authenticate],
+    schema: sendMessageSchema,
+  }, chatController.stream);
+
+  fastify.post('/messages/:taskId/stop', {
+    preHandler: [authenticate],
+  }, chatController.stop);
+
+  fastify.get('/files/:fileId/preview', {
+    preHandler: [authenticate],
+  }, chatController.previewFile);
 }

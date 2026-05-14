@@ -9,6 +9,7 @@ export const documentsController = {
       return reply.send(await documentsService.upload({
         buffer,
         filename:  data.filename,
+        mimetype:  data.mimetype,
         datasetId: request.query.dataset_id,
       }));
     } catch (err) {

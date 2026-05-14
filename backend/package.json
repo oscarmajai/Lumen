@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
@@ -18,5 +19,8 @@
     "form-data": "^4.0.5",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.6"
   }
 }

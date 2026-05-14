@@ -6,6 +6,31 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Building2, Mail, Lock, User, ArrowRight, ArrowLeft, Lightbulb, Loader2, CheckCircle2, Copy, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '@/app/context/AuthContext';
+import SEO from '../components/SEO';
+
+const REGISTER_JSON_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Lumen',
+  url: 'https://lumen.oscarmajai.dev',
+  description: 'Plataforma de IA para gestión del conocimiento empresarial. Crea bases de conocimiento con tus documentos y obtén respuestas precisas al instante.',
+  applicationCategory: 'BusinessApplication',
+  operatingSystem: 'Web',
+  inLanguage: 'es',
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+    description: 'Registro gratuito. Comienza en minutos.',
+  },
+  featureList: [
+    'Base de conocimiento con IA',
+    'Carga de documentos PDF, Word, Excel',
+    'Chat inteligente con RAG',
+    'Multi-tenant para empresas',
+    'Control de acceso por áreas',
+  ],
+};
 
 export default function Register() {
   const navigate = useNavigate();
@@ -60,6 +85,13 @@ export default function Register() {
   };
 
   return (
+    <>
+      <SEO
+        title="Registra tu Empresa"
+        description="Crea tu cuenta en Lumen y conecta a tu equipo con el conocimiento de tu empresa. Sube documentos, configura áreas y obtén respuestas con IA en minutos. Registro gratuito."
+        canonical="/register"
+        jsonLd={REGISTER_JSON_LD}
+      />
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-cyan-50 flex items-center justify-center p-4">
       <div className="w-full max-w-2xl">
         {/* Logo */}
@@ -319,5 +351,6 @@ export default function Register() {
         </div>
       </div>
     </div>
+    </>
   );
 }
