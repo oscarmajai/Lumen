@@ -7,6 +7,17 @@ const http = axios.create({
   timeout: 60_000,
 });
 
+// Converts an AxiosError into a plain Error with statusCode so controllers
+// can return the real HTTP status instead of always falling back to 500.
+function rethrowDify(err) {
+  if (err.response) {
+    const body = err.response.data;
+    const msg = body?.message || body?.error || body?.detail || err.message;
+    throw Object.assign(new Error(`Dify: ${msg}`), { statusCode: err.response.status });
+  }
+  throw err;
+}
+
 export const difyService = {
   async chat({ prompt, userId, conversationId, datasetIds }) {
     const response = await http.post('/chat-messages', {
@@ -17,7 +28,7 @@ export const difyService = {
       ...(conversationId ? { conversation_id: conversationId } : {}),
     }, {
       headers: { Authorization: `Bearer ${config.DIFY_CHAT_API_KEY}` },
-    });
+    }).catch(rethrowDify);
     return {
       answer:               response.data.answer,
       conversation_id:      response.data.conversation_id,
@@ -28,7 +39,7 @@ export const difyService = {
 
   async uploadFile({ buffer, filename, datasetId }) {
     const form = new FormData();
-    form.append('file', buffer, filename);
+    form.append('file', buffer, { filename });
     form.append('data', JSON.stringify({
       indexing_technique: 'high_quality',
       process_rule: { mode: 'automatic' },
@@ -37,7 +48,7 @@ export const difyService = {
       `/datasets/${datasetId}/document/create_by_file`,
       form,
       { headers: { Authorization: `Bearer ${config.DIFY_DATASET_API_KEY}`, ...form.getHeaders() } }
-    );
+    ).catch(rethrowDify);
     return { document_id: response.data.document.id, batch: response.data.batch, name: filename };
   },
 
@@ -45,7 +56,7 @@ export const difyService = {
     const response = await http.get(
       `/datasets/${datasetId}/documents/${documentId}/indexing-status`,
       { headers: { Authorization: `Bearer ${config.DIFY_DATASET_API_KEY}` } }
-    );
+    ).catch(rethrowDify);
     const item = Array.isArray(response.data?.data) ? response.data.data[0] : null;
     if (!item) return { id: documentId, technicalStatus: 'queued', percent: 0, errorMsg: '' };
 
@@ -68,7 +79,7 @@ export const difyService = {
     const response = await http.get(
       `/datasets/${datasetId}/documents?limit=100`,
       { headers: { Authorization: `Bearer ${config.DIFY_DATASET_API_KEY}` } }
-    );
+    ).catch(rethrowDify);
     return response.data;
   },
 };

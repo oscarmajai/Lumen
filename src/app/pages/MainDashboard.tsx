@@ -5,15 +5,11 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
   Mic,
-  Settings,
   Upload,
   FileText,
   Paperclip,
   Send,
   ExternalLink,
-  FileCheck,
-  AlertTriangle,
-  FileDown,
   Plus,
   Sparkles,
   MessageSquare,
@@ -22,10 +18,7 @@ import {
   Trash2,
   Menu,
   Database,
-  BarChart3,
-  Lightbulb,
   ChevronRight,
-  ChevronLeft,
   Loader2,
   Clock3,
   CheckCircle,
@@ -147,7 +140,7 @@ export default function MainDashboard() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
 
   // Mobile responsive states
-  const [mobileActiveTab, setMobileActiveTab] = useState<"fuentes" | "chat">("chat");
+  const [mobileActiveTab, setMobileActiveTab] = useState<"historial" | "fuentes" | "chat">("chat");
 
   // Panel visibility states
   const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
@@ -235,8 +228,8 @@ export default function MainDashboard() {
     try {
       const sessions = await getChatSessions();
       setChatHistory(sessions);
-    } catch {
-      // silent — sidebar just stays empty
+    } catch (err: any) {
+      toast.error('No se pudo cargar el historial', { description: err?.message });
     }
   };
 
@@ -555,9 +548,10 @@ export default function MainDashboard() {
                 <nav className="hidden md:flex items-center gap-2">
                   <Button
                     variant="ghost"
-                    className="text-gray-900 font-semibold border-b-2 border-blue-600 rounded-none px-4"
+                    className="text-gray-900 font-semibold border-b-2 border-blue-600 rounded-none px-4 flex items-center gap-2"
                   >
-                    Dashboard
+                    <MessageSquare className="w-4 h-4" />
+                    Lumen Chat
                   </Button>
                   <Button
                     variant="ghost"
@@ -567,22 +561,24 @@ export default function MainDashboard() {
                     <Mic className="w-4 h-4" />
                     Lumen Station
                   </Button>
+                  {(user?.role === 'OWNER' || user?.role === 'ADMIN') && (
+                    <Button
+                      variant="ghost"
+                      className="text-gray-500 hover:text-blue-600 font-medium px-4 flex items-center gap-2"
+                      onClick={() => navigate("/admin")}
+                    >
+                      <Database className="w-4 h-4" />
+                      Panel Admin
+                    </Button>
+                  )}
                 </nav>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
                   {user && (
                     <span className="hidden md:block text-sm text-gray-600 font-medium">
                       {user.name}
                     </span>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-                    onClick={() => navigate("/settings")}
-                  >
-                    <Settings className="w-5 h-5" />
-                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -605,6 +601,79 @@ export default function MainDashboard() {
             {/* Tab Content Container */}
             <div className="h-full bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col">
               
+              {/* HISTORIAL TAB */}
+              {mobileActiveTab === "historial" && (
+                <>
+                  <div className="border-b border-gray-200 px-4 py-3 flex-shrink-0 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">Historial</h2>
+                      <p className="text-xs text-gray-500">Tus conversaciones anteriores</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={handleNewChat}
+                      className="bg-blue-600 hover:bg-blue-700 text-white h-8 text-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1" />
+                      Nuevo
+                    </Button>
+                  </div>
+                  <div className="px-3 pt-3 flex-shrink-0">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Input
+                        placeholder="Buscar chats..."
+                        className="pl-9 h-9 text-sm"
+                        value={chatHistorySearch}
+                        onChange={(e) => setChatHistorySearch(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <ScrollArea className="flex-1 p-3">
+                    {chatHistory.length === 0 ? (
+                      <div className="text-center py-8 px-4">
+                        <MessageSquare className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                        <p className="text-sm text-gray-500">No hay conversaciones</p>
+                        <p className="text-xs text-gray-400 mt-1">Inicia un chat nuevo</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        {filteredChatHistory.map((chat) => (
+                          <div
+                            key={chat.id}
+                            className={`group relative flex items-start gap-2 p-3 rounded-lg cursor-pointer transition-colors ${
+                              chat.id === currentChatId
+                                ? 'bg-blue-50 border border-blue-200'
+                                : 'hover:bg-gray-50 border border-transparent'
+                            }`}
+                            onClick={() => {
+                              loadChatHistory(chat.id);
+                              setMobileActiveTab("chat");
+                            }}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-sm font-semibold truncate ${chat.id === currentChatId ? 'text-blue-900' : 'text-gray-900'}`}>
+                                {chat.title}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {relativeTime(chat.updated_at)}
+                              </p>
+                            </div>
+                            <button
+                              onClick={(e) => deleteChatFromHistory(chat.id, e)}
+                              className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1 rounded hover:bg-red-50 hover:text-red-500 text-gray-400 transition-all mt-0.5"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </>
+              )}
+
               {/* FUENTES TAB */}
               {mobileActiveTab === "fuentes" && (
                 <>
@@ -835,27 +904,33 @@ export default function MainDashboard() {
             <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 safe-area-inset-bottom md:hidden">
               <div className="flex items-center justify-around px-4 py-2">
                 <button
-                  onClick={() => setMobileActiveTab("fuentes")}
-                  className={`flex flex-col items-center justify-center py-2 px-6 rounded-lg transition-colors ${
-                    mobileActiveTab === "fuentes"
-                      ? "text-white"
-                      : "text-gray-400"
+                  onClick={() => setMobileActiveTab("historial")}
+                  className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
+                    mobileActiveTab === "historial" ? "text-white" : "text-gray-400"
                   }`}
                 >
-                  <FileText className="w-6 h-6 mb-1" />
-                  <span className="text-xs font-medium">Fuentes</span>
+                  <Clock3 className="w-6 h-6 mb-1" />
+                  <span className="text-xs font-medium">Historial</span>
                 </button>
-                
+
                 <button
                   onClick={() => setMobileActiveTab("chat")}
-                  className={`flex flex-col items-center justify-center py-2 px-6 rounded-lg transition-colors ${
-                    mobileActiveTab === "chat"
-                      ? "text-white"
-                      : "text-gray-400"
+                  className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
+                    mobileActiveTab === "chat" ? "text-white" : "text-gray-400"
                   }`}
                 >
                   <MessageSquare className="w-6 h-6 mb-1" />
                   <span className="text-xs font-medium">Chat</span>
+                </button>
+
+                <button
+                  onClick={() => setMobileActiveTab("fuentes")}
+                  className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
+                    mobileActiveTab === "fuentes" ? "text-white" : "text-gray-400"
+                  }`}
+                >
+                  <FileText className="w-6 h-6 mb-1" />
+                  <span className="text-xs font-medium">Fuentes</span>
                 </button>
               </div>
             </div>
