@@ -295,7 +295,7 @@ export default function LumenStation() {
           <Button 
             variant="ghost" 
             size="icon" 
-            onClick={() => navigate("/")}
+            onClick={() => navigate("/dashboard")}
             className="text-gray-500 hover:text-gray-900 hover:bg-gray-100"
           >
             <ChevronLeft className="w-6 h-6" />
