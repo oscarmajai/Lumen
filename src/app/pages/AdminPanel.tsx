@@ -255,13 +255,8 @@ export default function AdminPanel() {
         showUserInfo={false}
         extraRight={
           <>
-            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="hidden sm:flex gap-1.5 text-gray-600 h-8">
-              <LayoutDashboard className="w-3.5 h-3.5" />
-              Dashboard
-            </Button>
             <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 rounded-lg border border-purple-200">
               <Shield className="w-3.5 h-3.5 text-purple-600" />
-              <span className="text-sm text-purple-700 font-semibold hidden sm:inline">{user?.role}</span>
               <span className="text-sm text-purple-800 font-medium hidden md:inline">· {user?.name}</span>
             </div>
           </>
