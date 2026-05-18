@@ -42,6 +42,60 @@ export const chatController = {
     }
   },
 
+  async stream(request, reply) {
+    reply.hijack(); // Must hijack before any async work so Fastify never touches this reply
+    try {
+      const { userId, companyId, areaIds = [] } = request.user;
+      const { message, session_id } = request.body;
+      const { stream, sessionId } = await chatService.streamMessage({
+        userId, companyId, areaIds, message, sessionId: session_id,
+      });
+
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Session-Id', sessionId);
+      stream.pipe(reply.raw);
+
+      request.raw.on('close', () => stream.destroy());
+    } catch (err) {
+      if (!reply.raw.headersSent) {
+        reply.raw.writeHead(err.statusCode || 500, { 'Content-Type': 'application/json' });
+      }
+      reply.raw.end(JSON.stringify({ error: err.message }));
+    }
+  },
+
+  async stop(request, reply) {
+    try {
+      const { userId } = request.user;
+      const { taskId } = request.params;
+      await chatService.stopGenerate({ taskId, userId });
+      return reply.send({ message: 'Generación detenida' });
+    } catch (err) {
+      return reply.status(err.statusCode || 500).send({ error: err.message });
+    }
+  },
+
+  async previewFile(request, reply) {
+    reply.hijack();
+    try {
+      const { fileId } = request.params;
+      const { stream, contentType, contentDisposition } = await chatService.previewFile({ fileId });
+
+      reply.raw.setHeader('Content-Type', contentType);
+      if (contentDisposition) reply.raw.setHeader('Content-Disposition', contentDisposition);
+      stream.pipe(reply.raw);
+
+      request.raw.on('close', () => stream.destroy());
+    } catch (err) {
+      if (!reply.raw.headersSent) {
+        reply.raw.writeHead(err.statusCode || 500, { 'Content-Type': 'application/json' });
+      }
+      reply.raw.end(JSON.stringify({ error: err.message }));
+    }
+  },
+
   async deleteSession(request, reply) {
     try {
       await chatService.deleteSession({

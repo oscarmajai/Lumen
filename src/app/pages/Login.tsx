@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Lightbulb, Lock, Mail, Building2, ArrowRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/app/context/AuthContext';
+import SEO from '../components/SEO';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -41,6 +42,13 @@ export default function Login() {
   };
 
   return (
+    <>
+      <SEO
+        title="Iniciar Sesión"
+        description="Accede a Lumen con tu cuenta empresarial. Conecta con la base de conocimiento de tu empresa y obtén respuestas precisas al instante con IA."
+        canonical="/login"
+        noindex={false}
+      />
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-cyan-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
@@ -159,5 +167,6 @@ export default function Login() {
         </p>
       </div>
     </div>
+    </>
   );
 }

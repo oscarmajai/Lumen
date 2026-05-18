@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /login
+Allow: /register
+Disallow: /dashboard
+Disallow: /lumen-station
+Disallow: /settings
+Disallow: /admin
+Disallow: /change-password
+
+Sitemap: https://lumen.oscarmajai.dev/sitemap.xml

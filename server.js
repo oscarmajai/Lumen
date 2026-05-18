@@ -36,30 +36,38 @@ const DIFY_DATASET_ID = process.env.DIFY_DATASET_ID;
  * Recibe el mensaje de React y lo envía a Dify
  */
 fastify.post('/api/chat', async (request, reply) => {
-    const { message, user_id = 'lumen-user' } = request.body;
+    const { message, user_id = 'lumen-user', conversation_id } = request.body;
+
+    const payload = {
+        inputs: {},
+        query: message,
+        response_mode: "blocking",
+        user: user_id,
+    };
+
+    if (conversation_id) {
+        payload.conversation_id = conversation_id;
+    }
 
     try {
-        const response = await axios.post(`${DIFY_API_URL}/chat-messages`, {
-            inputs: {},
-            query: message,
-            response_mode: "blocking",
-            user: user_id
-        }, {
+        const response = await axios.post(`${DIFY_API_URL}/chat-messages`, payload, {
             headers: {
                 'Authorization': `Bearer ${DIFY_CHAT_API_KEY}`,
                 'Content-Type': 'application/json'
-            }
+            },
+            timeout: 120_000,
         });
 
         return reply.send({
             answer: response.data.answer,
-            conversation_id: response.data.conversation_id
+            conversation_id: response.data.conversation_id,
         });
     } catch (error) {
         fastify.log.error('Error en /api/chat:', error.response?.data || error.message);
-        return reply.status(500).send({
+        const status = error.response?.status ?? 500;
+        return reply.status(status).send({
             error: 'Error comunicándose con el Chat de Dify',
-            details: error.response?.data
+            details: error.response?.data,
         });
     }
 });

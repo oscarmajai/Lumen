@@ -8,7 +8,7 @@ export const chatSessionRepository = {
       'INSERT INTO chat_sessions (id, company_id, user_id, title, dify_conversation_id) VALUES (?, ?, ?, ?, ?)',
       [id, companyId, userId, title ?? 'Nueva conversación', difyConversationId ?? null]
     );
-    return { id, company_id: companyId, user_id: userId, title, dify_conversation_id: null };
+    return { id, company_id: companyId, user_id: userId, title, dify_conversation_id: difyConversationId ?? null };
   },
 
   async findById(id, companyId, userId) {
