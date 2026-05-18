@@ -2,8 +2,8 @@ import { difyService } from './dify.service.js';
 import { config } from '../config/index.js';
 
 export const documentsService = {
-  async upload({ buffer, filename, datasetId }) {
-    return difyService.uploadFile({ buffer, filename, datasetId: datasetId || config.DIFY_DATASET_ID });
+  async upload({ buffer, filename, mimetype, datasetId }) {
+    return difyService.uploadFile({ buffer, filename, mimetype, datasetId: datasetId || config.DIFY_DATASET_ID });
   },
 
   async getStatus({ documentId, datasetId }) {
