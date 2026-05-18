@@ -52,7 +52,7 @@ import {
 import { ScrollArea } from "../components/ui/scroll-area";
 import { toast } from "sonner";
 import {
-  chatStream, stopGenerate, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
+  chatStream, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
   getChatSessions, getChatMessages, deleteChatSession, ChatSession,
   Citation as ApiCitation, getFilePreview,
 } from "@/lib/api";
@@ -266,6 +266,35 @@ export default function MainDashboard() {
     scrollToBottom(mobileMessagesRef.current);
   }, [messages]);
 
+  // Restore last active conversation from localStorage on mount
+  useEffect(() => {
+    const savedId = localStorage.getItem('lumen_current_chat_id');
+    if (!savedId) return;
+    getChatMessages(savedId)
+      .then(msgs => {
+        setMessages(msgs.map(m => ({
+          id: m.id,
+          type: m.role === 'user' ? 'user' as const : 'assistant' as const,
+          content: m.content,
+          timestamp: new Date(m.created_at),
+        })));
+        setCurrentChatId(savedId);
+      })
+      .catch(() => {
+        // Session no longer exists — clear stale key silently
+        localStorage.removeItem('lumen_current_chat_id');
+      });
+  }, []);
+
+  // Persist currentChatId to localStorage whenever it changes
+  useEffect(() => {
+    if (currentChatId) {
+      localStorage.setItem('lumen_current_chat_id', currentChatId);
+    } else {
+      localStorage.removeItem('lumen_current_chat_id');
+    }
+  }, [currentChatId]);
+
   // Drag & Drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -411,9 +440,12 @@ export default function MainDashboard() {
         controller.signal,
       );
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
+      if (err.name === 'AbortError') {
+        // Cancelado por el usuario: limpiar el placeholder vacío si no llegó ningún token
+        setMessages(prev => prev.filter(m => !(m.id === assistantId && m.content === '')));
+      } else {
         toast.error('Error enviando el mensaje', { description: err?.message });
-        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        setMessages(prev => prev.filter(m => m.id !== assistantId));
       }
     } finally {
       setIsLoading(false);
@@ -421,12 +453,12 @@ export default function MainDashboard() {
     }
   };
 
-  const handleCancelGenerate = async () => {
+  const handleCancelGenerate = () => {
     abortControllerRef.current?.abort();
-    if (streamTaskIdRef.current) {
-      try { await stopGenerate(streamTaskIdRef.current); } catch {}
-      streamTaskIdRef.current = null;
-    }
+    setIsLoading(false);          // Garantía inmediata: no espera la cadena async
+    streamTaskIdRef.current = null;
+    // Eliminar cualquier placeholder vacío que haya quedado antes de recibir tokens
+    setMessages(prev => prev.filter(m => !(m.type === 'assistant' && m.content === '')));
   };
 
   const handleTextareaResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -440,6 +472,7 @@ export default function MainDashboard() {
     setMessages([]);
     setCurrentChatId(null);
     setChatInput("");
+    localStorage.removeItem('lumen_current_chat_id');
   };
 
   const handlePreview = async (fileId: string) => {
