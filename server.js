@@ -73,6 +73,60 @@ fastify.post('/api/chat', async (request, reply) => {
 });
 
 /**
+ * ENDPOINT: HISTORIAL DE MENSAJES
+ * Recupera los mensajes de una conversación existente en Dify
+ */
+fastify.get('/api/chat/:conversation_id/messages', async (request, reply) => {
+    const { conversation_id } = request.params;
+
+    try {
+        const response = await axios.get(`${DIFY_API_URL}/messages`, {
+            params: { user: 'lumen-user', conversation_id },
+            headers: { 'Authorization': `Bearer ${DIFY_CHAT_API_KEY}` },
+            timeout: 30_000,
+        });
+        return reply.send(response.data);
+    } catch (error) {
+        fastify.log.error('Error en /api/chat/:conversation_id/messages:', error.response?.data || error.message);
+        const status = error.response?.status ?? 500;
+        return reply.status(status).send({
+            error: 'Error obteniendo historial de mensajes',
+            details: error.response?.data,
+        });
+    }
+});
+
+/**
+ * ENDPOINT: DETENER GENERACIÓN
+ * Aborta la generación de un mensaje en curso via task_id
+ */
+fastify.post('/api/chat/stop/:task_id', async (request, reply) => {
+    const { task_id } = request.params;
+
+    try {
+        await axios.post(
+            `${DIFY_API_URL}/chat-messages/${task_id}/stop`,
+            { user: 'lumen-user' },
+            {
+                headers: {
+                    'Authorization': `Bearer ${DIFY_CHAT_API_KEY}`,
+                    'Content-Type': 'application/json',
+                },
+                timeout: 10_000,
+            }
+        );
+        return reply.send({ ok: true });
+    } catch (error) {
+        fastify.log.error('Error en /api/chat/stop/:task_id:', error.response?.data || error.message);
+        const status = error.response?.status ?? 500;
+        return reply.status(status).send({
+            error: 'Error deteniendo la generación',
+            details: error.response?.data,
+        });
+    }
+});
+
+/**
  * ENDPOINT 2: SUBIR DOCUMENTOS
  * Recibe el archivo de React y lo inyecta en el Dataset
  */
