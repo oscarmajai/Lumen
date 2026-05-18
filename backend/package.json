@@ -1,0 +1,26 @@
+{
+  "name": "lumen-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "axios": "^1.14.0",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^17.3.1",
+    "fastify": "^5.8.4",
+    "form-data": "^4.0.5",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.6"
+  }
+}

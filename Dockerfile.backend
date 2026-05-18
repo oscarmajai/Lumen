@@ -1,13 +1,7 @@
-# Usa una imagen oficial de Node basada en Debian/Ubuntu
 FROM node:20-slim
-
 WORKDIR /app
-
-COPY package.json package-lock.json* ./
-RUN npm ci --production || npm install --production
-
-COPY server.js ./
-
+COPY backend/package.json backend/package-lock.json* ./
+RUN npm ci --production
+COPY backend/ ./
 EXPOSE 3000
-
 CMD ["node", "server.js"]

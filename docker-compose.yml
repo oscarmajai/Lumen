@@ -1,17 +1,51 @@
 version: '3.8'
 
+networks:
+  lumen_net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+
 services:
+
+  db:
+    image: mysql:8.0
+    container_name: lumen_db
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE:      ${MYSQL_DATABASE}
+      MYSQL_USER:          ${MYSQL_USER}
+      MYSQL_PASSWORD:      ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root",
+             "--password=${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - lumen_net
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
     container_name: lumen_backend
     restart: unless-stopped
-    # Pasa el archivo .env físico al contenedor
     env_file:
       - .env
-    # No necesitamos exponer el puerto 3000 al mundo exterior,
-    # Nginx (frontend) se comunicará con él internamente.
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - lumen_net
 
   frontend:
     build:
@@ -20,6 +54,8 @@ services:
     container_name: lumen_frontend
     restart: unless-stopped
     ports:
-      - "81:80" # Expone el puerto 80 al internet
+      - "81:80"
     depends_on:
       - backend
+    networks:
+      - lumen_net
