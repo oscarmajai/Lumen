@@ -10,10 +10,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Checkbox } from '../components/ui/checkbox';
 import {
-  Lightbulb, LogOut, Shield, Users, FileText, Upload, Plus, Trash2,
+  Shield, Users, FileText, Upload, Plus, Trash2,
   Edit, Database, Search, Loader2, CheckCircle2, Clock, X,
   FolderOpen, Copy, AlertCircle, LayoutDashboard,
 } from 'lucide-react';
+import AppHeader from '../components/AppHeader';
 import { useAuth } from '@/app/context/AuthContext';
 import {
   getAreas, createArea, updateArea,
@@ -49,9 +50,7 @@ function RoleBadge({ role }: { role: string }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function AdminPanel() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
-
-  const handleLogout = () => { logout(); navigate('/login'); };
+  const { user } = useAuth();
 
   // ── Areas ──
   const [areas, setAreas] = useState<Area[]>([]);
@@ -250,36 +249,24 @@ export default function AdminPanel() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
 
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
-              <Lightbulb className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">Lumen</h1>
-              <p className="text-xs text-gray-500">Panel de Administración</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="hidden sm:flex gap-2 text-gray-600">
-              <LayoutDashboard className="w-4 h-4" />
+      <AppHeader
+        subtitle="Panel de Administración"
+        activeSection="admin"
+        showUserInfo={false}
+        extraRight={
+          <>
+            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="hidden sm:flex gap-1.5 text-gray-600 h-8">
+              <LayoutDashboard className="w-3.5 h-3.5" />
               Dashboard
             </Button>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg border border-purple-200">
-              <Shield className="w-4 h-4 text-purple-600" />
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 rounded-lg border border-purple-200">
+              <Shield className="w-3.5 h-3.5 text-purple-600" />
               <span className="text-sm text-purple-700 font-semibold hidden sm:inline">{user?.role}</span>
-              <span className="text-sm text-purple-800 font-medium hidden md:inline">— {user?.name}</span>
+              <span className="text-sm text-purple-800 font-medium hidden md:inline">· {user?.name}</span>
             </div>
-            <Button variant="ghost" size="sm" onClick={handleLogout} className="text-gray-600 hover:text-red-600 hover:bg-red-50">
-              <LogOut className="w-4 h-4" />
-              <span className="hidden sm:inline ml-1.5">Salir</span>
-            </Button>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       {/* Main */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">

@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router";
 import { useAuth } from "@/app/context/AuthContext";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
+import AppHeader from "../components/AppHeader";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Mic,
   Upload,
   FileText,
-  Paperclip,
   Send,
+  Square,
   ExternalLink,
   Plus,
   Sparkles,
@@ -24,7 +27,6 @@ import {
   CheckCircle,
   AlertCircle,
   X as XIcon,
-  LogOut,
 } from "lucide-react";
 import {
   ResizablePanelGroup,
@@ -50,7 +52,7 @@ import {
 import { ScrollArea } from "../components/ui/scroll-area";
 import { toast } from "sonner";
 import {
-  chat as chatApi, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
+  chatStream, stopGenerate, getDocuments, uploadFile, getIndexStatus, getAreas, Area,
   getChatSessions, getChatMessages, deleteChatSession, ChatSession,
   Citation as ApiCitation, getFilePreview,
 } from "@/lib/api";
@@ -77,6 +79,27 @@ interface Message {
 // Re-use ChatSession from api — just alias it locally
 type ChatHistory = ChatSession;
 
+function parseThink(content: string): { think: string; answer: string; thinking: boolean } {
+  const closed = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
+  if (closed) return { think: closed[1].trim(), answer: content.slice(closed[0].length), thinking: false };
+  const open = content.match(/^<think>([\s\S]*)/);
+  if (open) return { think: open[1], answer: '', thinking: true };
+  return { think: '', answer: content, thinking: false };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const MD: Record<string, React.ComponentType<any>> = {
+  p:          ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+  strong:     ({ children }) => <strong className="font-semibold">{children}</strong>,
+  ul:         ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
+  ol:         ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
+  li:         ({ children }) => <li>{children}</li>,
+  pre:        ({ children }) => <pre className="bg-slate-100 rounded-lg p-3 text-xs font-mono mb-2 overflow-x-auto whitespace-pre-wrap">{children}</pre>,
+  code:       ({ children }) => <code className="bg-slate-100 px-1 py-0.5 rounded text-xs font-mono">{children}</code>,
+  blockquote: ({ children }) => <blockquote className="border-l-2 border-gray-300 pl-3 italic text-gray-500 mb-2">{children}</blockquote>,
+  a:          ({ children, href }) => <a href={href} className="text-blue-600 underline hover:text-blue-800" target="_blank" rel="noopener noreferrer">{children}</a>,
+};
+
 const KNOWLEDGE_AREAS = [
   "RRHH",
   "Finanzas",
@@ -101,21 +124,21 @@ function relativeTime(dateStr: string): string {
 }
 
 export default function MainDashboard() {
-  const navigate = useNavigate();
-  const { user, logout } = useAuth();
-
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
-  };
+  const { user } = useAuth();
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [employeeAreas, setEmployeeAreas] = useState<Area[]>([]);
   const pollingRefs = useRef<Map<string, number>>(new Map());
   const isMountedRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const streamTaskIdRef = useRef<string | null>(null);
+  const desktopMessagesRef = useRef<HTMLDivElement>(null);
+  const mobileMessagesRef = useRef<HTMLDivElement>(null);
+  const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<ApiCitation | null>(null);
 
   // Chat history features
   const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
@@ -145,8 +168,6 @@ export default function MainDashboard() {
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
   };
-
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   function startPolling(documentId: string) {
     if (pollingRefs.current.has(documentId)) return; // already polling
@@ -236,6 +257,14 @@ export default function MainDashboard() {
       pollingRefs.current.clear();
     };
   }, [user?.role]);
+
+  useEffect(() => {
+    const scrollToBottom = (el: HTMLDivElement | null) => {
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    };
+    scrollToBottom(desktopMessagesRef.current);
+    scrollToBottom(mobileMessagesRef.current);
+  }, [messages]);
 
   // Drag & Drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -348,38 +377,63 @@ export default function MainDashboard() {
 
     setMessages((prev) => [...prev, userMessage]);
     setChatInput("");
+    if (chatTextareaRef.current) chatTextareaRef.current.style.height = 'auto';
     setIsLoading(true);
 
+    const assistantId = `${Date.now()}-assistant`;
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, type: 'assistant' as const, content: '', timestamp: new Date(), citations: [] },
+    ]);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    streamTaskIdRef.current = null;
+    const isNewSession = !currentChatId;
+
     try {
-      const isNewSession = !currentChatId;
-      const res = await chatApi(text, currentChatId ?? undefined);
-      const assistantMessage: Message = {
-        id: `${Date.now()}-assistant`,
-        type: 'assistant',
-        content: res.answer || '',
-        timestamp: new Date(),
-        citations: res.citations ?? [],
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-      if (res.session_id) setCurrentChatId(res.session_id);
-      if (isNewSession) refreshSessions();
+      await chatStream(
+        text,
+        currentChatId ?? undefined,
+        (token, taskId) => {
+          if (taskId) streamTaskIdRef.current = taskId;
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, content: m.content + token } : m)
+          );
+        },
+        (citations, newSessionId) => {
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, citations } : m)
+          );
+          if (newSessionId) setCurrentChatId(newSessionId);
+          if (isNewSession) refreshSessions();
+        },
+        controller.signal,
+      );
     } catch (err: any) {
-      toast.error('Error enviando el mensaje', { description: err?.message });
+      if (err.name !== 'AbortError') {
+        toast.error('Error enviando el mensaje', { description: err?.message });
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+      }
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
-  const handleGenerateDeliverable = async (type: string) => {
-    const deliverableNames: Record<string, string> = {
-      checklist: "Checklist de Seguridad",
-      incident: "Reporte de Incidente",
-      export: "Exportación a PDF"
-    };
-    
-    toast.info(`Generando ${deliverableNames[type] || type}...`, {
-      description: "Esta acción requiere conexión con el backend RAG"
-    });
+  const handleCancelGenerate = async () => {
+    abortControllerRef.current?.abort();
+    if (streamTaskIdRef.current) {
+      try { await stopGenerate(streamTaskIdRef.current); } catch {}
+      streamTaskIdRef.current = null;
+    }
+  };
+
+  const handleTextareaResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setChatInput(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
   const handleNewChat = () => {
@@ -449,7 +503,7 @@ export default function MainDashboard() {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
+    <div className="h-screen overflow-hidden bg-slate-50 flex md:flex-row flex-col">
       {/* Chat History Sidebar - DESKTOP */}
       {showHistorySidebar && (
         <div className="hidden md:flex w-64 bg-white border-r border-gray-200 flex-col">
@@ -530,73 +584,12 @@ export default function MainDashboard() {
 
       {/* Main Content Wrapper */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
-          <div className="px-6 py-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                {!showHistorySidebar && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setShowHistorySidebar(true)}
-                    className="text-gray-600"
-                  >
-                    <Menu className="w-5 h-5" />
-                  </Button>
-                )}
-                <h1 className="text-2xl font-bold text-gray-900">LUMEN</h1>
-              </div>
-
-              <div className="flex items-center gap-6">
-                <nav className="hidden md:flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    className="text-gray-900 font-semibold border-b-2 border-blue-600 rounded-none px-4 flex items-center gap-2"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    Lumen Chat
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="text-gray-500 hover:text-blue-600 font-medium px-4 flex items-center gap-2"
-                    onClick={() => navigate("/lumen-station")}
-                  >
-                    <Mic className="w-4 h-4" />
-                    Lumen Station
-                  </Button>
-                  {(user?.role === 'OWNER' || user?.role === 'ADMIN') && (
-                    <Button
-                      variant="ghost"
-                      className="text-gray-500 hover:text-blue-600 font-medium px-4 flex items-center gap-2"
-                      onClick={() => navigate("/admin")}
-                    >
-                      <Database className="w-4 h-4" />
-                      Panel Admin
-                    </Button>
-                  )}
-                </nav>
-
-                <div className="flex items-center gap-3">
-                  {user && (
-                    <span className="hidden md:block text-sm text-gray-600 font-medium">
-                      {user.name}
-                    </span>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-gray-600 hover:text-red-600 hover:bg-red-50"
-                    onClick={handleLogout}
-                    title="Cerrar sesión"
-                  >
-                    <LogOut className="w-5 h-5" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
+        <AppHeader
+          subtitle="Asistente de Conocimiento"
+          showSidebarToggle={!showHistorySidebar}
+          onSidebarToggle={() => setShowHistorySidebar(true)}
+          activeSection="chat"
+        />
 
         {/* Main Content - 3 Resizable Columns */}
         <main className="flex-1 p-2 md:p-6 overflow-hidden pb-20 md:pb-6">
@@ -773,7 +766,7 @@ export default function MainDashboard() {
                   </div>
 
                   {/* Messages Area */}
-                  <div className="flex-1 overflow-y-auto px-4 py-4">
+                  <div ref={mobileMessagesRef} className="flex-1 overflow-y-auto px-4 py-4">
                 {messages.length === 0 ? (
                   <div className="h-full flex items-center justify-center">
                     <div className="text-center max-w-sm px-4">
@@ -805,34 +798,60 @@ export default function MainDashboard() {
                       <div key={message.id}>
                         {message.type === "assistant" ? (
                           <div className="flex items-start gap-2">
-                            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-blue-600 flex-shrink-0">
+                            <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex-shrink-0 shadow-sm">
                               <Sparkles className="w-3.5 h-3.5 text-white" />
                             </div>
                             <div className="flex-1">
-                              <div className="bg-gray-50 rounded-2xl p-3">
-                                <p className="text-sm text-gray-800">
-                                  {message.content}
-                                </p>
+                              <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-3.5 py-2.5 shadow-sm text-sm text-slate-800 leading-relaxed">
+                                {message.content === '' ? (
+                                  <span className="inline-flex gap-1">
+                                    <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" />
+                                    <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                                    <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+                                  </span>
+                                ) : (() => {
+                                  const { think, answer, thinking } = parseThink(message.content);
+                                  return (
+                                    <>
+                                      {(think || thinking) && (
+                                        <details open={thinking} className="mb-2">
+                                          <summary className="text-xs font-semibold text-gray-400 cursor-pointer select-none hover:text-gray-500">
+                                            Razonamiento de Lumen
+                                          </summary>
+                                          <p className="text-xs text-gray-400 italic border-l-2 border-gray-100 pl-3 mt-1.5 leading-relaxed">
+                                            {think}
+                                          </p>
+                                        </details>
+                                      )}
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+                                        {answer}
+                                      </ReactMarkdown>
+                                    </>
+                                  );
+                                })()}
                               </div>
                               {message.citations && message.citations.length > 0 && (
-                                <div className="mt-2 space-y-1.5">
-                                  {message.citations.map((cit, i) => (
-                                    <div key={i} className="flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
-                                      <FileText className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
-                                      <div className="flex-1 min-w-0">
-                                        <p className="text-xs font-semibold text-gray-800 truncate">{cit.document_name}</p>
-                                        {cit.content && <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{cit.content}</p>}
-                                      </div>
+                                <div className="mt-1.5 flex flex-wrap gap-1 pl-0.5">
+                                  {message.citations
+                                    .filter((cit, idx, arr) => arr.findIndex(c => c.document_name === cit.document_name) === idx)
+                                    .map((cit, i) => (
+                                    <div
+                                      key={i}
+                                      onClick={() => setSelectedCitation(cit)}
+                                      className="flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs hover:bg-blue-50 hover:border-blue-200 transition-colors group cursor-pointer"
+                                    >
+                                      <FileText className="w-2.5 h-2.5 text-slate-400 flex-shrink-0" />
+                                      <span className="text-slate-600 truncate max-w-[100px]">{cit.document_name}</span>
                                       {cit.document_id && (
                                         <button
-                                          onClick={() => handlePreview(cit.document_id!)}
+                                          onClick={(e) => { e.stopPropagation(); handlePreview(cit.document_id!); }}
                                           disabled={previewLoading === cit.document_id}
-                                          className="flex-shrink-0 p-1 rounded hover:bg-blue-100 disabled:opacity-50"
-                                          title="Ver fuente"
+                                          className="flex-shrink-0 disabled:opacity-40"
+                                          title="Ver en documento"
                                         >
                                           {previewLoading === cit.document_id
-                                            ? <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                                            : <ExternalLink className="w-3.5 h-3.5 text-blue-500" />}
+                                            ? <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
+                                            : <ExternalLink className="w-2.5 h-2.5 text-slate-400" />}
                                         </button>
                                       )}
                                     </div>
@@ -842,110 +861,100 @@ export default function MainDashboard() {
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-start gap-2 justify-end">
-                            <div className="bg-blue-100 rounded-2xl px-3 py-2 max-w-[80%]">
-                              <p className="text-sm text-gray-900">
+                          <div className="flex items-end gap-2 justify-end">
+                            <div className="bg-blue-600 rounded-2xl rounded-br-sm px-3.5 py-2.5 max-w-[82%] shadow-sm">
+                              <p className="text-sm text-white leading-relaxed whitespace-pre-wrap">
                                 {message.content}
                               </p>
                             </div>
-                            <div className="w-7 h-7 bg-gray-200 rounded-full flex items-center justify-center">
-                              <User className="w-3.5 h-3.5 text-gray-600" />
+                            <div className="w-6 h-6 bg-slate-200 rounded-full flex items-center justify-center flex-shrink-0 mb-0.5">
+                              <User className="w-3 h-3 text-slate-600" />
                             </div>
                           </div>
                         )}
                       </div>
                     ))}
-                    {isLoading && (
-                      <div className="flex items-start gap-2">
-                        <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-                          <Sparkles className="w-3.5 h-3.5 text-white animate-pulse" />
-                        </div>
-                        <div className="bg-gray-50 rounded-2xl p-3">
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce" />
-                            <div
-                              className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce"
-                              style={{ animationDelay: "0.2s" }}
-                            />
-                            <div
-                              className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce"
-                              style={{ animationDelay: "0.4s" }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
 
               {/* Input */}
-              <div className="border-t border-gray-200 p-3 flex-shrink-0 safe-area-inset-bottom">
-                <form onSubmit={handleSendMessage} className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="text-gray-400 hover:text-gray-600 flex-shrink-0 h-10 w-10"
-                  >
-                    <Paperclip className="w-5 h-5" />
-                  </Button>
-                  <Input
-                    type="text"
+              <div className="border-t border-gray-100 px-3 pt-2.5 pb-3 flex-shrink-0 safe-area-inset-bottom bg-white/80 backdrop-blur-sm">
+                <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+                  <Textarea
                     placeholder="Escribe tu consulta..."
                     value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    className="flex-1 bg-gray-50 border-gray-200"
+                    onChange={handleTextareaResize}
+                    className="flex-1 min-h-[38px] max-h-[120px] bg-slate-50 border-slate-200 rounded-xl resize-none text-sm py-2 px-3 leading-relaxed field-sizing-fixed"
                     disabled={isLoading}
+                    rows={1}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage(e as any);
+                      }
+                    }}
                   />
-                  <Button
-                    type="submit"
-                    size="icon"
-                    className="bg-blue-600 hover:bg-blue-700 flex-shrink-0 h-10 w-10"
-                    disabled={!chatInput.trim() || isLoading}
-                  >
-                    <Send className="w-4 h-4" />
-                  </Button>
-                  </form>
-                  <p className="text-[10px] text-gray-400 text-center mt-1.5">
-                    POWERED BY INNOVATEC RAG-ENGINE V2.4
-                  </p>
-                </div>
+                  {isLoading ? (
+                    <Button
+                      type="button"
+                      size="icon"
+                      onClick={handleCancelGenerate}
+                      className="bg-red-500 hover:bg-red-600 text-white flex-shrink-0 h-9 w-9 rounded-xl"
+                      title="Cancelar"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                    </Button>
+                  ) : (
+                    <Button
+                      type="submit"
+                      size="icon"
+                      className="bg-blue-600 hover:bg-blue-700 flex-shrink-0 h-9 w-9 rounded-xl"
+                      disabled={!chatInput.trim()}
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                </form>
+                <p className="text-[10px] text-gray-300 text-center mt-1.5">
+                  Lumen AI · RAG-Engine
+                </p>
+              </div>
               </>
               )}
             </div>
 
             {/* Bottom Navigation Bar - Mobile */}
-            <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 safe-area-inset-bottom md:hidden">
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 safe-area-inset-bottom md:hidden shadow-[0_-1px_8px_rgba(0,0,0,0.06)]">
               <div className="flex items-center justify-around px-4 py-2">
                 <button
                   onClick={() => setMobileActiveTab("historial")}
                   className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
-                    mobileActiveTab === "historial" ? "text-white" : "text-gray-400"
+                    mobileActiveTab === "historial" ? "text-blue-600" : "text-gray-400"
                   }`}
                 >
-                  <Clock3 className="w-6 h-6 mb-1" />
-                  <span className="text-xs font-medium">Historial</span>
+                  <Clock3 className="w-5 h-5 mb-0.5" />
+                  <span className="text-[10px] font-medium">Historial</span>
                 </button>
 
                 <button
                   onClick={() => setMobileActiveTab("chat")}
                   className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
-                    mobileActiveTab === "chat" ? "text-white" : "text-gray-400"
+                    mobileActiveTab === "chat" ? "text-blue-600" : "text-gray-400"
                   }`}
                 >
-                  <MessageSquare className="w-6 h-6 mb-1" />
-                  <span className="text-xs font-medium">Chat</span>
+                  <MessageSquare className="w-5 h-5 mb-0.5" />
+                  <span className="text-[10px] font-medium">Chat</span>
                 </button>
 
                 <button
                   onClick={() => setMobileActiveTab("fuentes")}
                   className={`flex flex-col items-center justify-center py-2 px-4 rounded-lg transition-colors ${
-                    mobileActiveTab === "fuentes" ? "text-white" : "text-gray-400"
+                    mobileActiveTab === "fuentes" ? "text-blue-600" : "text-gray-400"
                   }`}
                 >
-                  <FileText className="w-6 h-6 mb-1" />
-                  <span className="text-xs font-medium">Fuentes</span>
+                  <FileText className="w-5 h-5 mb-0.5" />
+                  <span className="text-[10px] font-medium">Fuentes</span>
                 </button>
               </div>
             </div>
@@ -1150,7 +1159,7 @@ export default function MainDashboard() {
                 </div>
 
                 {/* Messages Area - SCROLLABLE */}
-                <div className="flex-1 overflow-y-auto px-6 py-6">
+                <div ref={desktopMessagesRef} className="flex-1 overflow-y-auto px-6 py-6">
                   {messages.length === 0 ? (
                     <div className="h-full flex items-center justify-center">
                       <div className="text-center max-w-md">
@@ -1182,35 +1191,60 @@ export default function MainDashboard() {
                         <div key={message.id}>
                           {message.type === "assistant" ? (
                             <div className="flex items-start gap-3">
-                              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-600 flex-shrink-0">
+                              <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex-shrink-0 shadow-sm">
                                 <Sparkles className="w-4 h-4 text-white" />
                               </div>
-                              <div className="flex-1">
-                                <div className="bg-gray-50 rounded-2xl p-4">
-                                  <p className="text-sm text-gray-800">
-                                    {message.content}
-                                  </p>
+                              <div className="flex-1 max-w-2xl">
+                                <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-5 py-3.5 shadow-sm text-sm text-slate-800 leading-relaxed">
+                                  {message.content === '' ? (
+                                    <span className="inline-flex gap-1">
+                                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" />
+                                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+                                    </span>
+                                  ) : (() => {
+                                    const { think, answer, thinking } = parseThink(message.content);
+                                    return (
+                                      <>
+                                        {(think || thinking) && (
+                                          <details open={thinking} className="mb-3">
+                                            <summary className="text-xs font-semibold text-gray-400 cursor-pointer select-none hover:text-gray-500">
+                                              Razonamiento de Lumen
+                                            </summary>
+                                            <p className="text-xs text-gray-400 italic border-l-2 border-gray-100 pl-3 mt-2 leading-relaxed">
+                                              {think}
+                                            </p>
+                                          </details>
+                                        )}
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+                                          {answer}
+                                        </ReactMarkdown>
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                                 {message.citations && message.citations.length > 0 && (
-                                  <div className="mt-2 space-y-1.5">
-                                    {message.citations.map((cit, i) => (
-                                      <div key={i} className="flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
-                                        <FileText className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
-                                        <div className="flex-1 min-w-0">
-                                          <p className="text-xs font-semibold text-gray-800 truncate">{cit.document_name}</p>
-                                          {cit.content && <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{cit.content}</p>}
-                                          {cit.dataset_name && <p className="text-[10px] text-blue-400 mt-0.5">{cit.dataset_name}</p>}
-                                        </div>
+                                  <div className="mt-2 flex flex-wrap gap-1.5 pl-1">
+                                    {message.citations
+                                      .filter((cit, idx, arr) => arr.findIndex(c => c.document_name === cit.document_name) === idx)
+                                      .map((cit, i) => (
+                                      <div
+                                        key={i}
+                                        onClick={() => setSelectedCitation(cit)}
+                                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs hover:bg-blue-50 hover:border-blue-200 transition-colors group cursor-pointer"
+                                      >
+                                        <FileText className="w-3 h-3 text-slate-400 group-hover:text-blue-500 flex-shrink-0" />
+                                        <span className="text-slate-600 font-medium truncate max-w-[140px] group-hover:text-blue-700">{cit.document_name}</span>
                                         {cit.document_id && (
                                           <button
-                                            onClick={() => handlePreview(cit.document_id!)}
+                                            onClick={(e) => { e.stopPropagation(); handlePreview(cit.document_id!); }}
                                             disabled={previewLoading === cit.document_id}
-                                            className="flex-shrink-0 p-1 rounded hover:bg-blue-100 disabled:opacity-50"
-                                            title="Ver fuente"
+                                            className="flex-shrink-0 disabled:opacity-40"
+                                            title="Ver en documento"
                                           >
                                             {previewLoading === cit.document_id
-                                              ? <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                                              : <ExternalLink className="w-3.5 h-3.5 text-blue-500" />}
+                                              ? <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
+                                              : <ExternalLink className="w-3 h-3 text-slate-400 group-hover:text-blue-500" />}
                                           </button>
                                         )}
                                       </div>
@@ -1220,78 +1254,64 @@ export default function MainDashboard() {
                               </div>
                             </div>
                           ) : (
-                            <div className="flex items-start gap-3 justify-end">
-                              <div className="bg-blue-100 rounded-2xl px-4 py-3 max-w-md">
-                                <p className="text-sm text-gray-900">
+                            <div className="flex items-end gap-2.5 justify-end">
+                              <div className="bg-blue-600 rounded-2xl rounded-br-sm px-4 py-3 max-w-md shadow-sm">
+                                <p className="text-sm text-white leading-relaxed whitespace-pre-wrap">
                                   {message.content}
                                 </p>
                               </div>
-                              <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
-                                <User className="w-4 h-4 text-gray-600" />
+                              <div className="w-7 h-7 bg-slate-200 rounded-full flex items-center justify-center flex-shrink-0 mb-0.5">
+                                <User className="w-3.5 h-3.5 text-slate-600" />
                               </div>
                             </div>
                           )}
                         </div>
                       ))}
-                      {isLoading && (
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
-                            <Sparkles className="w-4 h-4 text-white animate-pulse" />
-                          </div>
-                          <div className="bg-gray-50 rounded-2xl p-4">
-                            <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" />
-                              <div
-                                className="w-2 h-2 bg-blue-600 rounded-full animate-bounce"
-                                style={{ animationDelay: "0.2s" }}
-                              />
-                              <div
-                                className="w-2 h-2 bg-blue-600 rounded-full animate-bounce"
-                                style={{ animationDelay: "0.4s" }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
 
                 {/* Input - FIXED AT BOTTOM */}
-                <div className="border-t border-gray-100 p-4 bg-white/50 backdrop-blur-sm flex-shrink-0">
-                  <form onSubmit={handleSendMessage} className="flex gap-2 max-w-4xl mx-auto w-full">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-                    >
-                      <Paperclip className="w-5 h-5" />
-                    </Button>
-                    <div className="relative flex-1">
-                      <Input
-                        type="text"
-                        placeholder="Escribe tu consulta aquí..."
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        className="w-full bg-gray-50 border-gray-200 focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all pr-12 rounded-xl"
-                        disabled={isLoading}
-                      />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                        {isLoading && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
-                      </div>
-                    </div>
-                    <Button
-                      type="submit"
-                      size="icon"
-                      className="bg-blue-600 hover:bg-blue-700 shadow-sm hover:shadow-md transition-all flex-shrink-0 rounded-xl"
-                      disabled={!chatInput.trim() || isLoading}
-                    >
-                      <Send className="w-4 h-4" />
-                    </Button>
+                <div className="border-t border-gray-100 px-4 pt-3 pb-4 bg-white/80 backdrop-blur-sm flex-shrink-0">
+                  <form onSubmit={handleSendMessage} className="flex items-end gap-2 max-w-4xl mx-auto w-full">
+                    <Textarea
+                      ref={chatTextareaRef}
+                      placeholder="Escribe tu consulta… (Enter para enviar, Shift+Enter para nueva línea)"
+                      value={chatInput}
+                      onChange={handleTextareaResize}
+                      className="flex-1 min-h-[40px] max-h-[160px] bg-slate-50 border-slate-200 focus:bg-white focus-visible:ring-2 focus-visible:ring-blue-100 transition-all rounded-xl resize-none overflow-y-auto py-2.5 px-3 text-sm leading-relaxed field-sizing-fixed"
+                      disabled={isLoading}
+                      rows={1}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendMessage(e as any);
+                        }
+                      }}
+                    />
+                    {isLoading ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        onClick={handleCancelGenerate}
+                        className="bg-red-500 hover:bg-red-600 text-white shadow-sm transition-all flex-shrink-0 rounded-xl mb-0.5 h-9 w-9"
+                        title="Cancelar generación"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-current" />
+                      </Button>
+                    ) : (
+                      <Button
+                        type="submit"
+                        size="icon"
+                        className="bg-blue-600 hover:bg-blue-700 shadow-sm hover:shadow-md transition-all flex-shrink-0 rounded-xl mb-0.5 h-9 w-9"
+                        disabled={!chatInput.trim()}
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
                   </form>
-                  <p className="text-[10px] font-medium text-gray-400 text-center mt-2 uppercase tracking-tighter">
-                    LUMEN AI • INNOVATEC RAG-ENGINE V2.4
+                  <p className="text-[10px] font-medium text-gray-300 text-center mt-2 tracking-wide">
+                    Lumen AI · RAG-Engine
                   </p>
                 </div>
               </div>
@@ -1299,6 +1319,29 @@ export default function MainDashboard() {
           </ResizablePanelGroup>
         </main>
       </div>
+
+      {/* Citation Chunk Modal */}
+      <Dialog open={!!selectedCitation} onOpenChange={(open) => { if (!open) setSelectedCitation(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+              <FileText className="w-4 h-4 text-slate-400 flex-shrink-0" />
+              <span className="truncate">{selectedCitation?.document_name}</span>
+            </DialogTitle>
+            {selectedCitation?.score != null && (
+              <DialogDescription className="text-xs text-gray-400">
+                Relevancia: {Math.round(selectedCitation.score * 100)}%
+                {selectedCitation.dataset_name && ` · ${selectedCitation.dataset_name}`}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          <div className="max-h-72 overflow-y-auto rounded-lg bg-slate-50 border-l-4 border-blue-300 px-4 py-3">
+            <p className="text-sm text-slate-700 leading-relaxed italic whitespace-pre-wrap">
+              "{selectedCitation?.content}"
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Upload Dialog */}
       <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
