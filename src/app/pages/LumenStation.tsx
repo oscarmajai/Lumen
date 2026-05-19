@@ -60,6 +60,10 @@ export default function LumenStation() {
   const recognitionRef = useRef<any>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const skipTypewriterRef = useRef(false);
+  // Controls whether onend should restart recognition — updated synchronously
+  // before calling start()/stop() to avoid the race condition where React state
+  // updates haven't propagated yet when onend fires.
+  const shouldRestartRef = useRef(false);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -120,13 +124,6 @@ export default function LumenStation() {
         }
       };
 
-      recognitionRef.current.onend = () => {
-        // Accedemos a los estados actuales usando refs o efectos, 
-        // pero aquí necesitamos saber si debemos reiniciar.
-        // Como onend se redefine en cada render si no tenemos cuidado, 
-        // usaremos una técnica de ref para el estado actual si es necesario, 
-        // o simplemente confiaremos en que el closure tiene acceso a los valores del render actual.
-      };
     }
 
     return () => {
@@ -136,23 +133,15 @@ export default function LumenStation() {
     };
   }, []);
 
-  // Use a ref to keep track of isRecording and isPaused for the onend handler
-  const isRecordingRef = useRef(isRecording);
-  const isPausedRef = useRef(isPaused);
-  
-  useEffect(() => {
-    isRecordingRef.current = isRecording;
-    isPausedRef.current = isPaused;
-  }, [isRecording, isPaused]);
-
   useEffect(() => {
     if (recognitionRef.current) {
       recognitionRef.current.onend = () => {
-        if (isRecordingRef.current && !isPausedRef.current) {
+        if (shouldRestartRef.current) {
           try {
             recognitionRef.current.start();
           } catch (err) {
             console.error("Error al reiniciar reconocimiento:", err);
+            shouldRestartRef.current = false;
             setIsRecording(false);
           }
         }
@@ -199,15 +188,16 @@ export default function LumenStation() {
 
   const toggleRecording = () => {
     if (isRecording) {
+      shouldRestartRef.current = false;  // sync: prevent onend from restarting
       recognitionRef.current?.stop();
       setIsRecording(false);
       setIsPaused(false);
-      
+
       // Al terminar de grabar, procesamos lo acumulado
       if (accumulatedTranscript || interimTranscript) {
         handleUserSpeech((accumulatedTranscript + " " + interimTranscript).trim());
       }
-      
+
       setInterimTranscript("");
       setAccumulatedTranscript("");
     } else {
@@ -215,20 +205,22 @@ export default function LumenStation() {
         toast.error("Tu navegador no soporta el reconocimiento de voz.");
         return;
       }
-      
+
       // Stop any ongoing speech
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
       setCurrentResponse("");
       setInterimTranscript("");
       setAccumulatedTranscript("");
-      
+
       try {
+        shouldRestartRef.current = true;  // sync: allow onend to restart
         recognitionRef.current.start();
         setIsRecording(true);
         setIsPaused(false);
       } catch (err) {
         console.error("Failed to start recognition", err);
+        shouldRestartRef.current = false;
       }
     }
   };
@@ -237,15 +229,18 @@ export default function LumenStation() {
     if (!recognitionRef.current) return;
 
     if (isPaused) {
-        try {
-            recognitionRef.current.start();
-            setIsPaused(false);
-        } catch (err) {
-            console.error("Error al reanudar:", err);
-        }
+      try {
+        shouldRestartRef.current = true;  // sync: allow onend to restart
+        recognitionRef.current.start();
+        setIsPaused(false);
+      } catch (err) {
+        console.error("Error al reanudar:", err);
+        shouldRestartRef.current = false;
+      }
     } else {
-        recognitionRef.current.stop();
-        setIsPaused(true);
+      shouldRestartRef.current = false;  // sync: prevent onend from restarting
+      recognitionRef.current.stop();
+      setIsPaused(true);
     }
   };
 
@@ -267,14 +262,15 @@ export default function LumenStation() {
   const speak = (text: string) => {
     if (!window.speechSynthesis) return;
 
-    // Cancel any current speech
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'es-ES';
     utterance.rate = 1.0;
-    
-    utterance.onstart = () => setIsSpeaking(true);
+
+    // Set immediately so the animation starts in sync with the audio.
+    // utterance.onstart fires with a significant delay on WebKit/mobile browsers.
+    setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = () => setIsSpeaking(false);
 
@@ -435,14 +431,13 @@ export default function LumenStation() {
             {(isRecording || isSpeaking) && (
                 <div className="flex gap-1.5 items-end h-10">
                     {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                        <div 
-                            key={i} 
-                            className={`w-1.5 bg-blue-600 rounded-full transition-all duration-300 ${
-                                isPaused && !isSpeaking ? 'h-1.5' : ''
-                            }`}
-                            style={{ 
-                                height: (isPaused && !isSpeaking) ? '6px' : `${Math.random() * 40 + 8}px`,
-                                animation: (isPaused && !isSpeaking) ? 'none' : `wave 1s ease-in-out infinite ${i * 0.12}s`
+                        <div
+                            key={i}
+                            className="w-1.5 bg-blue-600 rounded-full"
+                            style={{
+                                height: '8px',
+                                animation: (isPaused && !isSpeaking) ? 'none' : `wave 1s ease-in-out infinite`,
+                                animationDelay: `${(i - 1) * 0.12}s`,
                             }}
                         />
                     ))}
@@ -456,7 +451,7 @@ export default function LumenStation() {
                 <Button
                     variant="outline"
                     size="icon"
-                    onClick={isSpeaking ? () => window.speechSynthesis.cancel() : togglePause}
+                    onClick={isSpeaking ? () => { window.speechSynthesis.cancel(); setIsSpeaking(false); } : togglePause}
                     className="w-20 h-20 rounded-full border-gray-200 bg-white hover:bg-gray-50 text-gray-700 shadow-lg"
                 >
                     {isSpeaking ? <Square className="w-8 h-8 text-red-500 fill-current" /> : isPaused ? <Play className="w-8 h-8 fill-current text-blue-600" /> : <Pause className="w-8 h-8 fill-current text-blue-600" />}
